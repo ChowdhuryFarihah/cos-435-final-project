@@ -4,9 +4,8 @@ import numpy as np
 from typing import Optional
 
 def task_generator(max_depth : int, prune_prob : float, num_distractor_rules : int, 
-                   num_distractor_objects : int, sample_distractor_rules : bool,
-                   object_types : list[int], object_colors : list[int], 
-                   rng: Optional[random.Random] = None) -> list:
+                   num_distractor_objects : int, object_types : list[int], 
+                   object_colors : list[int], rng: Optional[random.Random] = None) -> list:
     
     if max_depth < 0:
         raise ValueError("depth must be >= 0")
