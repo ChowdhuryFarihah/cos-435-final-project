@@ -5,7 +5,21 @@ import numpy as np
 from env import BaseGridEnv
 from tasks import task_generator
 
+'''
+1) if episode_done:
+    self.current_episode += 1
 
+    if self.current_episode < self.episodes_per_trial:
+        obs, reset_info = self.env.reset(task=self.task)
+        terminated = False
+        truncated = False
+
+returns new observation but reward corresponds to previous episode this creates a mismatch:
+(obs_t+1, reward_t, done=False)
+
+This is not standard PPO transition format and can destabilize training.
+
+'''
 class RL2MetaWrapper(gym.Env):
     """
     RL^2 wrapper for BaseGridEnv.
