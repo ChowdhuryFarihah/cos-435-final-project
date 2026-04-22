@@ -118,4 +118,5 @@ def expand_task_tree(target_object: dict, parent_id: int, current_depth: int,
         object_types=object_types,
         object_colors=object_colors,
         rng=rng,
+    
     )
