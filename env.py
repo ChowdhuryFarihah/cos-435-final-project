@@ -6,7 +6,10 @@ import gymnasium as gym
 import numpy as np
 
 '''NOTES:
-guard against sampling more unique (type color) objects than object space allows'''
+1) guard against sampling more unique (type color) objects than object space allows
+2) no distractor rules or objects yet
+'''
+
 from tasks import task_generator
 
 @dataclass
@@ -19,9 +22,9 @@ class BaseGridEnv(gym.Env):
 
     
     # note that the paper uses max_steps = 3 * width * height but our env is simpler
-    def __init__(self, size: int = 5, max_steps: int = 75, step_penalty: float = -0.01,
+    def __init__(self, size: int = 5, max_steps: int = 75, step_penalty: float = 0,
                  success_reward: float = 1.0, wrong_terminal_reward: float = 0.0,
-                 object_types : int = 3, object_colors : int = 4, max_depth : int = 2, 
+                 object_types : int = 4, object_colors : int = 4, max_depth : int = 2, 
                  prune_prob : float = 0.1, num_distractor_rules : int = 2, num_distractor_objects : int = 2):
         
         if object_types <= 0:
@@ -64,6 +67,7 @@ class BaseGridEnv(gym.Env):
         self.step_count = 0
         self.task = None
 
+        
         # we have an explicit task tracking where as in paper it was implicit 
         self.task_progress = 0
 
@@ -72,10 +76,12 @@ class BaseGridEnv(gym.Env):
         self.num_channels = 1 + self.object_colors*self.object_types
 
 
-        # 4 actions: up, down, left, right. Agent collects an object only when it steps onto 
+        # 6 actions: up, down, left, right, pick_up, put_down. Agent collects an object only when it steps onto 
         # the location of the object, at which point the position of the object and the agent 
-        # until the agent is near 
-        self.action_space = gym.spaces.Discrete(4)
+        # until another rule is triggered
+        self.action_space = gym.spaces.Discrete(6)
+        self.held_object = None
+
         self.observation_space = gym.spaces.Box(
             low=0.0,
             high=1.0,
@@ -97,26 +103,30 @@ class BaseGridEnv(gym.Env):
                 return np.array(pos, dtype=np.int32)
 
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None, options=None, task=None):
 
         super().reset(seed=seed)
         self.step_count = 0
         self.task_progress = 0   
         self.objects : list[GridObject] = []
         self.agent_pos = None
+        self.held_object = None
 
         self.grid_position_rng = np.random.default_rng(seed) #for grid positions
         self.rng = random.Random(seed) #for task generator
 
-        self.task = task_generator(
-                max_depth=self.max_depth,
-                prune_prob=self.prune_prob,
-                num_distractor_rules=self.num_distractor_rules,
-                num_distractor_objects=self.num_distractor_objects,
-                object_types=list(range(self.object_types)),
-                object_colors=list(range(self.object_colors)),
-                rng=self.rng,
-                )
+        if task is not None:
+            self.task = task
+        else:
+            self.task = task_generator(
+                    max_depth=self.max_depth,
+                    prune_prob=self.prune_prob,
+                    num_distractor_rules=self.num_distractor_rules,
+                    num_distractor_objects=self.num_distractor_objects,
+                    object_types=list(range(self.object_types)),
+                    object_colors=list(range(self.object_colors)),
+                    rng=self.rng,
+                    )
 
         occupied: set[tuple[int, int]] = set()
 
@@ -175,7 +185,7 @@ class BaseGridEnv(gym.Env):
                 elif match2 is None and self.objects_match(obj, node["input_object_2"]):
                     match2 = obj
 
-            if match1 is not None and match2 is not None:
+            if match1 is not None and match2 is not None and match1 is not match2:
                 if self.are_adjacent(match1.pos, match2.pos):
                     new_pos = match1.pos.copy()
                     self.objects.remove(match1)
@@ -219,19 +229,45 @@ class BaseGridEnv(gym.Env):
 
         if action == 0:      # up
             nx, ny = x - 1, y
+            if 0 <= nx < self.size and 0 <= ny < self.size:
+                self.agent_pos = np.array([nx, ny], dtype=np.int32)
+                
         elif action == 1:    # down
             nx, ny = x + 1, y
+            if 0 <= nx < self.size and 0 <= ny < self.size:
+                self.agent_pos = np.array([nx, ny], dtype=np.int32)
         elif action == 2:    # left
             nx, ny = x, y - 1
+            if 0 <= nx < self.size and 0 <= ny < self.size:
+                self.agent_pos = np.array([nx, ny], dtype=np.int32)
         elif action == 3:    # right
             nx, ny = x, y + 1
+            if 0 <= nx < self.size and 0 <= ny < self.size:
+                self.agent_pos = np.array([nx, ny], dtype=np.int32)
+        elif action == 4:    # pick_up
+            if self.held_object is None:
+                for obj in self.objects:
+                    if np.array_equal(obj.pos, self.agent_pos):
+                        self.held_object = obj
+                        self.objects.remove(obj)
+                        break
+        elif action == 5:    # put_down
+            if self.held_object is not None:
+                is_cell_occupied = any(np.array_equal(obj.pos, self.agent_pos) for obj in self.objects)
+
+                if not is_cell_occupied:
+                    self.held_object.pos = self.agent_pos.copy()
+                    self.objects.append(self.held_object)
+                    self.held_object = None
+
+                    # rules only checked after deliberate placement
+                    self.apply_rules()
         else:
             raise ValueError("Invalid action")
-
-        if 0 <= nx < self.size and 0 <= ny < self.size:
-            self.agent_pos = np.array([nx, ny], dtype=np.int32)
-
-        self.apply_rules()
+        
+        # used for testing out env 
+        # if self.held_object is not None:
+        #             self.held_object.pos = self.agent_pos
 
         if self.check_goal():
             reward = self.success_reward
@@ -240,6 +276,23 @@ class BaseGridEnv(gym.Env):
             truncated = True
 
         return self.get_obs(), reward, terminated, truncated, {}
+
+
+env = BaseGridEnv()
+obs, _ = env.reset(seed=0)
+
+for _ in range(20):
+    a = env.action_space.sample()
+    obs, r, term, trunc, _ = env.step(a)
+    print(a, r, term, trunc, env.agent_pos, env.held_object)
+        
+    if term or trunc:
+
+        break
+
+
+
+
 
             
 
